@@ -14,11 +14,8 @@ let gl;
 
 let program;
 let siteProgram;
-
+let surfaceProgram;
 let quad_vao;
-let site_vao;
-let siteBuffer;
-let siteColorBuffer;
 
 // Pontos do diagrama.
 let sites = [];
@@ -49,21 +46,23 @@ let lastY = 0;
 
 const DRAG_THRESHOLD = 4;
 const SITE_PICK_RADIUS = 12;
+const CONE_SIDES = 128;
 
+let nextColor = 0;
 // Cores dos pontos.
 const palette = [
-    [0.90, 0.22, 0.24],
-    [0.20, 0.80, 0.42],
-    [0.62, 0.24, 0.80],
-    [0.95, 0.83, 0.20],
-    [0.95, 0.48, 0.24],
-    [0.20, 0.75, 0.85],
-    [0.65, 0.25, 0.75],
-    [0.35, 0.80, 0.25],
-    [0.95, 0.25, 0.62],
-    [0.25, 0.90, 0.70],
-    [0.30, 0.45, 0.95],
-    [0.75, 0.80, 0.25]
+    [1.00, 0.20, 0.25],
+    [0.15, 0.85, 0.40],
+    [0.65, 0.25, 0.95],
+    [1.00, 0.85, 0.10],
+    [1.00, 0.50, 0.10],
+    [0.10, 0.80, 0.95],
+    [0.85, 0.20, 0.85],
+    [0.40, 0.90, 0.15],
+    [1.00, 0.25, 0.60],
+    [0.15, 0.95, 0.75],
+    [0.25, 0.45, 1.00],
+    [0.85, 0.90, 0.15]
 ];
 
 // ---------------------------------------------------------------------------
@@ -91,23 +90,42 @@ function worldToScreen(x, y) {
         y: canvas.height / 2 - (y - panY) * scale
     };
 }
-
 // ---------------------------------------------------------------------------
 
-function distance(a, b) {
-    const dx = Math.abs(a.x - b.x);
-    const dy = Math.abs(a.y - b.y);
+function surfaceRadius() {
+    const scale = worldScale();
+    const halfWidth = canvas.width / 2 / scale;
+    const halfHeight = canvas.height / 2 / scale;
 
-    switch (metric) {
-        case 1:
-            return dx + dy;
+    let farthest = 0;
 
-        case 2:
-            return Math.max(dx, dy);
-
-        default:
-            return Math.hypot(dx, dy);
+    for (const site of sites) {
+        farthest = Math.max(
+            farthest,
+            Math.abs(site.x - panX) + Math.abs(site.y - panY)
+        );
     }
+
+    return (farthest + halfWidth + halfHeight) * 1.05;
+}
+// ---------------------------------------------------------------------------
+
+// Procura o ponto mais próximo do rato, sem limite de distância.
+function findNearestSite(x, y) {
+    let nearest = -1;
+    let minDistance = Infinity;
+
+    for (let i = 0; i < sites.length; i++) {
+        const p = worldToScreen(sites[i].x, sites[i].y);
+        const d = Math.hypot(p.x - x, p.y - y);
+
+        if (d < minDistance) {
+            minDistance = d;
+            nearest = i;
+        }
+    }
+
+    return nearest;
 }
 
 // Procura o ponto mais próximo do rato.
@@ -197,6 +215,7 @@ function on_mouse_up(x, y) {
     if (!dragged && selectedSite < 0 && sites.length < MAX_SITES) {
         const p = screenToWorld(x, y);
         const color = palette[sites.length % palette.length];
+        nextColor++;
 
         sites.push({
             x: p.x,
@@ -256,8 +275,8 @@ function on_key(key) {
             break;
 
         case 'x': {
-            // Remove o ponto sob o rato.
-            const index = findSiteAt(pointerX, pointerY);
+            // Remove o ponto mais próximo do rato.
+            const index = findNearestSite(pointerX, pointerY);
 
             if (index >= 0) {
                 sites.splice(index, 1);
@@ -267,9 +286,7 @@ function on_key(key) {
         }
 
         case 'm':
-            // Mantém o modo Search até ser implementada
-            // a técnica Surfaces + Depth Buffer.
-            renderMode = 0;
+            renderMode = (renderMode + 1) % 3;
             break;
     }
 }
@@ -303,12 +320,12 @@ function setup_input() {
 function createQuad() {
     const corners = new Float32Array([
         -1, -1,
-         1, -1,
-         1,  1,
+        1, -1,
+        1, 1,
 
         -1, -1,
-         1,  1,
-        -1,  1
+        1, 1,
+        -1, 1
     ]);
 
     quad_vao = gl.createVertexArray();
@@ -344,72 +361,14 @@ function createQuad() {
 }
 
 // ---------------------------------------------------------------------------
-// Criação dos buffers utilizados para desenhar os pontos.
+//   Envia para o programa os uniforms da câmara e dos pontos.
 // ---------------------------------------------------------------------------
 
-function createSiteBuffers() {
-    site_vao = gl.createVertexArray();
-    gl.bindVertexArray(site_vao);
+function setSceneUniforms(prog) {
+    gl.uniform2f(gl.getUniformLocation(prog, "u_resolution"), canvas.width, canvas.height);
+    gl.uniform2f(gl.getUniformLocation(prog, "u_pan"), panX, panY);
+    gl.uniform1f(gl.getUniformLocation(prog, "u_zoom"), zoom);
 
-    // Buffer das posições.
-    siteBuffer = gl.createBuffer();
-
-    gl.bindBuffer(gl.ARRAY_BUFFER, siteBuffer);
-
-    gl.bufferData(
-        gl.ARRAY_BUFFER,
-        MAX_SITES * 2 * 4,
-        gl.DYNAMIC_DRAW
-    );
-
-    const positionLocation = gl.getAttribLocation(
-        siteProgram,
-        "a_position"
-    );
-
-    gl.enableVertexAttribArray(positionLocation);
-
-    gl.vertexAttribPointer(
-        positionLocation,
-        2,
-        gl.FLOAT,
-        false,
-        0,
-        0
-    );
-
-    // Buffer das cores.
-    siteColorBuffer = gl.createBuffer();
-
-    gl.bindBuffer(gl.ARRAY_BUFFER, siteColorBuffer);
-
-    gl.bufferData(
-        gl.ARRAY_BUFFER,
-        MAX_SITES * 3 * 4,
-        gl.DYNAMIC_DRAW
-    );
-
-    const colorLocation = gl.getAttribLocation(
-        siteProgram,
-        "a_color"
-    );
-
-    gl.enableVertexAttribArray(colorLocation);
-
-    gl.vertexAttribPointer(
-        colorLocation,
-        3,
-        gl.FLOAT,
-        false,
-        0,
-        0
-    );
-
-    gl.bindVertexArray(null);
-}
-
-// Atualiza os buffers com as posições e cores dos pontos.
-function updateSiteBuffers() {
     const positions = new Float32Array(MAX_SITES * 2);
     const colors = new Float32Array(MAX_SITES * 3);
 
@@ -422,12 +381,12 @@ function updateSiteBuffers() {
         colors[3 * i + 2] = sites[i].color[2];
     }
 
-    gl.bindBuffer(gl.ARRAY_BUFFER, siteBuffer);
-    gl.bufferSubData(gl.ARRAY_BUFFER, 0, positions);
-
-    gl.bindBuffer(gl.ARRAY_BUFFER, siteColorBuffer);
-    gl.bufferSubData(gl.ARRAY_BUFFER, 0, colors);
+    gl.uniform2fv(gl.getUniformLocation(prog, "u_site_position[0]"), positions);
+    gl.uniform3fv(gl.getUniformLocation(prog, "u_site_color[0]"), colors);
 }
+
+
+
 
 // ---------------------------------------------------------------------------
 // Desenho do diagrama de Voronoi.
@@ -436,68 +395,14 @@ function updateSiteBuffers() {
 function drawDiagram() {
     gl.useProgram(program);
 
-    gl.uniform2f(
-        gl.getUniformLocation(program, "u_resolution"),
-        canvas.width,
-        canvas.height
-    );
+    setSceneUniforms(program);
 
-    gl.uniform2f(
-        gl.getUniformLocation(program, "u_pan"),
-        panX,
-        panY
-    );
-
-    gl.uniform1f(
-        gl.getUniformLocation(program, "u_zoom"),
-        zoom
-    );
-
-    gl.uniform1i(
-        gl.getUniformLocation(program, "u_metric"),
-        metric
-    );
-
-    gl.uniform1i(
-        gl.getUniformLocation(program, "u_n_sites"),
-        sites.length
-    );
-
-    gl.uniform1i(
-        gl.getUniformLocation(program, "u_show_borders"),
-        showBorders ? 1 : 0
-    );
-
-    const positions = new Float32Array(MAX_SITES * 2);
-    const colors = new Float32Array(MAX_SITES * 3);
-
-    for (let i = 0; i < sites.length; i++) {
-        positions[2 * i] = sites[i].x;
-        positions[2 * i + 1] = sites[i].y;
-
-        colors[3 * i] = sites[i].color[0];
-        colors[3 * i + 1] = sites[i].color[1];
-        colors[3 * i + 2] = sites[i].color[2];
-    }
-
-    gl.uniform2fv(
-        gl.getUniformLocation(program, "u_site_position[0]"),
-        positions
-    );
-
-    gl.uniform3fv(
-        gl.getUniformLocation(program, "u_site_color[0]"),
-        colors
-    );
+    gl.uniform1i(gl.getUniformLocation(program, "u_metric"), metric);
+    gl.uniform1i(gl.getUniformLocation(program, "u_n_sites"), sites.length);
+    gl.uniform1i(gl.getUniformLocation(program, "u_show_borders"), showBorders ? 1 : 0);
 
     gl.bindVertexArray(quad_vao);
-
-    gl.drawArrays(
-        gl.TRIANGLES,
-        0,
-        6
-    );
-
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
     gl.bindVertexArray(null);
 }
 
@@ -510,38 +415,43 @@ function drawSites() {
         return;
     }
 
-    updateSiteBuffers();
-
     gl.useProgram(siteProgram);
 
-    gl.uniform2f(
-        gl.getUniformLocation(siteProgram, "u_resolution"),
-        canvas.width,
-        canvas.height
-    );
+    setSceneUniforms(siteProgram);
 
-    gl.uniform2f(
-        gl.getUniformLocation(siteProgram, "u_pan"),
-        panX,
-        panY
-    );
-
-    gl.uniform1f(
-        gl.getUniformLocation(siteProgram, "u_zoom"),
-        zoom
-    );
-
-    gl.bindVertexArray(site_vao);
-
-    gl.drawArrays(
-        gl.POINTS,
-        0,
-        sites.length
-    );
-
+    // Sem atributos: cada vértice usa gl_VertexID para ler o seu ponto.
     gl.bindVertexArray(null);
+    gl.drawArrays(gl.POINTS, 0, sites.length);
 }
 
+// ---------------------------------------------------------------------------
+// Desenho da surface.
+// ---------------------------------------------------------------------------
+
+function drawSurfaces() {
+    if (sites.length === 0) {
+        return;
+    }
+
+    const sides = metric === 0 ? CONE_SIDES : 4;
+
+    gl.useProgram(surfaceProgram);
+
+    setSceneUniforms(surfaceProgram);
+
+    gl.uniform1i(gl.getUniformLocation(surfaceProgram, "u_metric"), metric);
+    gl.uniform1i(gl.getUniformLocation(surfaceProgram, "u_sides"), sides);
+    gl.uniform1f(gl.getUniformLocation(surfaceProgram, "u_radius"), surfaceRadius());
+
+    gl.enable(gl.DEPTH_TEST);
+    gl.depthFunc(gl.LESS);
+
+    // Sem buffers: gl_InstanceID escolhe o site, gl_VertexID o vértice.
+    gl.bindVertexArray(null);
+    gl.drawArraysInstanced(gl.TRIANGLE_FAN, 0, sides + 2, sites.length);
+
+    gl.disable(gl.DEPTH_TEST);
+}
 // ---------------------------------------------------------------------------
 
 function setup(shaders) {
@@ -560,8 +470,12 @@ function setup(shaders) {
         shaders["site.frag"]
     );
 
+    surfaceProgram = buildProgramFromSources(
+        gl,
+        shaders["surface.vert"],
+        shaders["surface.frag"]
+    );
     createQuad();
-    createSiteBuffers();
 
     resize();
 
@@ -570,9 +484,9 @@ function setup(shaders) {
     setup_input();
 
     gl.clearColor(
-        0.0,
-        0.0,
-        0.0,
+        0.08,
+        0.08,
+        0.09,
         1.0
     );
 
@@ -586,9 +500,28 @@ function setup(shaders) {
 function animate(timestamp) {
     window.requestAnimationFrame(animate);
 
-    gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
 
-    drawDiagram();
+    if (renderMode === 0) {
+        drawDiagram();
+    } else if (renderMode === 1) {
+        drawSurfaces();
+    } else {
+        const half = Math.floor(canvas.width / 2);
+
+        gl.enable(gl.SCISSOR_TEST);
+
+        // Esquerda: superfícies (vertex shader).
+        gl.scissor(0, 0, half, canvas.height);
+        drawSurfaces();
+
+        // Direita: pesquisa (fragment shader).
+        gl.scissor(half, 0, canvas.width - half, canvas.height);
+        drawDiagram();
+
+        gl.disable(gl.SCISSOR_TEST);
+    }
+
     drawSites();
 
     gl.bindVertexArray(null);
@@ -600,5 +533,7 @@ loadShadersFromURLS([
     "quad.vert",
     "quad.frag",
     "site.vert",
-    "site.frag"
+    "site.frag",
+    "surface.vert",
+    "surface.frag"
 ]).then(shaders => setup(shaders));

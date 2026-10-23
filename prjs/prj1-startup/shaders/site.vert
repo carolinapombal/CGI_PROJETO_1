@@ -2,8 +2,10 @@
 
 precision highp float;
 
-in vec2 a_position;
-in vec3 a_color;
+const int MAX_SITES = 32;
+
+uniform vec2 u_site_position[MAX_SITES];
+uniform vec3 u_site_color[MAX_SITES];
 
 uniform vec2 u_resolution;
 uniform vec2 u_pan;
@@ -12,18 +14,14 @@ uniform float u_zoom;
 out vec3 v_color;
 
 void main() {
+    vec2 p = u_site_position[gl_VertexID];
+
     float scale = min(u_resolution.x, u_resolution.y) * u_zoom;
+    vec2 screen_position = (p - u_pan) * scale + 0.5f * u_resolution;
+    vec2 clip_position = 2.0f * screen_position / u_resolution - 1.0f;
 
-    vec2 screen_position =
-        (a_position - u_pan) * scale + 0.5 * u_resolution;
+    gl_Position = vec4(clip_position, 0.0f, 1.0f);
+    gl_PointSize = 12.0f;
 
-    vec2 clip_position =
-        2.0 * screen_position / u_resolution - 1.0;
-
-    gl_Position = vec4(clip_position, 0.0, 1.0);
-
-    // Keep the points circular and easy to select.
-    gl_PointSize = 12.0;
-
-    v_color = a_color;
+    v_color = u_site_color[gl_VertexID];
 }
